@@ -1,4 +1,4 @@
-# Ethereum Seed Phrase Balance Checker
+# Ethereum Seed Phrase Balance Checker & Generator
 
 A Python script that **generates random Ethereum seed phrases**, derives multiple addresses from each, and checks their balances by connecting to an Ethereum node. Any seed phrases with addresses holding ETH are saved to a file for review.
 
