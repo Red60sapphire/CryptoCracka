@@ -1,68 +1,82 @@
 import asyncio
 import secrets
+from web3 import AsyncHTTPProvider, AsyncWeb3
 from mnemonic import Mnemonic
 from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
-import aiohttp
+import aiofiles
 
-RPC_URL = "http://127.0.0.1:8545"
+RPC_URL = "http://127.0.0.1:8545"  # Change if needed
 OUTPUT_FILE = "found_wallets.txt"
 MAX_ADDRESSES_PER_SEED = 30
-BATCH_SIZE = 100  # seeds per batch
-DISPLAY_DELAY = 0.1  # seconds between printing lines
+MAX_CONCURRENT_SEEDS = 100  # concurrency limit
 
 mnemo = Mnemonic("english")
 
 def generate_seed_phrase():
-    entropy = secrets.token_bytes(16)
+    entropy = secrets.token_bytes(16)  # 128 bits entropy = 12 words
     return mnemo.to_mnemonic(entropy)
 
 def derive_eth_address_from_seed(seed_phrase, account_index=0):
     seed_bytes = Bip39SeedGenerator(seed_phrase).Generate()
-    bip44_ctx = Bip44.FromSeed(seed_bytes, Bip44Coins.ETHEREUM)
-    addr_ctx = bip44_ctx.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(account_index)
-    return addr_ctx.PublicKey().ToAddress()
+    bip44_mst_ctx = Bip44.FromSeed(seed_bytes, Bip44Coins.ETHEREUM)
+    bip44_acc_ctx = bip44_mst_ctx.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(account_index)
+    return bip44_acc_ctx.PublicKey().ToAddress()
 
-async def check_seed(session, seed_phrase):
-    addresses = [derive_eth_address_from_seed(seed_phrase, i) for i in range(MAX_ADDRESSES_PER_SEED)]
-    batch_request = [
-        {"jsonrpc": "2.0", "method": "eth_getBalance", "params": [addr, "latest"], "id": idx}
-        for idx, addr in enumerate(addresses)
-    ]
-
+async def check_balance(w3, address):
     try:
-        async with session.post(RPC_URL, json=batch_request) as resp:
-            results = await resp.json()
+        balance_wei = await w3.eth.get_balance(address)
+        balance_eth = w3.from_wei(balance_wei, 'ether')
+        return balance_eth
     except Exception as e:
-        return f"RPC error: {e}"
+        print(f"Error checking {address}: {e}")
+        return 0
 
-    for idx, result in enumerate(results):
-        if "result" in result:
-            balance_wei = int(result["result"], 16)
-            if balance_wei > 0:
-                balance_eth = balance_wei / 1e18
-                with open(OUTPUT_FILE, "a") as f:
-                    f.write(f"Seed: {seed_phrase} | Address[{idx}]: {addresses[idx]} | Balance: {balance_eth} ETH\n")
-                return f"[FOUND FUNDS] {seed_phrase} ({balance_eth} ETH)"
-    return f"{seed_phrase} - NO FUNDS"
+async def check_seed(w3, seed_phrase):
+    found_funds = False
+    for idx in range(MAX_ADDRESSES_PER_SEED):
+        address = derive_eth_address_from_seed(seed_phrase, idx)
+        balance = await check_balance(w3, address)
+        if balance > 0:
+            found_funds = True
+            async with aiofiles.open(OUTPUT_FILE, "a") as f:
+                await f.write(f"Seed: {seed_phrase} | Address[{idx}]: {address} | Balance: {balance} ETH\n")
+            print(f"[FOUND FUNDS] Seed: {seed_phrase} | Address[{idx}]: {address} | Balance: {balance} ETH")
+    if not found_funds:
+        print(f"{seed_phrase} - NO FUNDS")
+    return found_funds
 
 async def main():
-    connector = aiohttp.TCPConnector(limit=50)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        count = 0
-        while True:
-            tasks = [check_seed(session, generate_seed_phrase()) for _ in range(BATCH_SIZE)]
-            results = await asyncio.gather(*tasks)
-            count += BATCH_SIZE
+    w3 = AsyncWeb3(AsyncHTTPProvider(RPC_URL))
+    connected = await w3.is_connected()
+    if not connected:
+        print("Failed to connect to Ethereum node.")
+        return
+    print("Connected to Ethereum node")
 
-            for line in results:
-                if line:
-                    print(line)
-                    await asyncio.sleep(DISPLAY_DELAY)  # Slow down output
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_SEEDS)
+    count = 0
 
+    async def worker():
+        nonlocal count
+        async with semaphore:
+            seed = generate_seed_phrase()
+            await check_seed(w3, seed)
+            count += 1
             if count % 100 == 0:
-                print(f"--- Checked {count} seeds so far ---")
+                print(f"Checked {count} seeds...")
 
-            await asyncio.sleep(0.05)  # small pause between batches
+    tasks = set()
+    while True:
+        task = asyncio.create_task(worker())
+        tasks.add(task)
+
+        # Clean up done tasks to avoid memory leak
+        done, pending = await asyncio.wait(tasks, timeout=0, return_when=asyncio.ALL_COMPLETED)
+        tasks = pending
+
+        # If too many tasks, wait for some to complete before adding more
+        if len(tasks) >= MAX_CONCURRENT_SEEDS * 2:
+            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
 if __name__ == "__main__":
     asyncio.run(main())
