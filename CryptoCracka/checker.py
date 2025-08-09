@@ -40,15 +40,20 @@ def check_balance(w3, address):
 
 def check_seed(w3, seed_phrase):
     try:
+        found_funds = False
         for idx in range(MAX_ADDRESSES_PER_SEED):
             address = derive_eth_address_from_seed(seed_phrase, idx)
             balance = check_balance(w3, address)
             if balance > 0:
+                found_funds = True
                 with open(OUTPUT_FILE, "a") as f:
                     f.write(f"Seed: {seed_phrase} | Address[{idx}]: {address} | Balance: {balance} ETH\n")
-                print(f"[FOUND] Seed: {seed_phrase} | Address[{idx}]: {address} | Balance: {balance} ETH")
-                return True
-        return False
+                print(f"[FOUND FUNDS] Seed: {seed_phrase} | Address[{idx}]: {address} | Balance: {balance} ETH")
+                # Optional: continue checking or break if you only want first found
+                # break
+        if not found_funds:
+            print(f"{seed_phrase} - NO FUNDS")
+        return found_funds
     except Exception as e:
         print(f"Error in check_seed for {seed_phrase[:20]}...: {e}")
         return False
@@ -61,7 +66,6 @@ def main():
         return
     print("Connected to Ethereum node")
 
-
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = set()
         count = 0
@@ -71,13 +75,11 @@ def main():
                 done, _ = wait(futures, return_when=FIRST_COMPLETED)
                 futures -= done
 
-
             # Submit new seed check task
             seed = generate_seed_phrase()
             future = executor.submit(check_seed, w3, seed)
             futures.add(future)
             count += 1
-
 
             if count % 100 == 0:
                 print(f"Checked {count} seeds... Active tasks: {len(futures)}")
