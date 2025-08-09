@@ -38,6 +38,8 @@ git clone https://github.com/Red60sapphire/CryptoCracka
 cd CryptoCracka
 ```
 
+- **Run the `install.bat` file to set up everything!** 🚀
+
 ## Setting Up Geth (Ethereum Node)
 To run a local Ethereum node, download and install Geth.
 
